@@ -1,14 +1,16 @@
 import { useState, useSyncExternalStore } from 'react';
-import { cropForRatio, makeVariant, moveCrop, resizeCrop } from './domain';
-import { EMPTY_DOCUMENT, type FrameDocument, type GuideKey, type Ratio, type ViewState } from './model';
+import { cropForRatio, makeVariant } from './domain';
+import { EMPTY_DOCUMENT, type CropVariant, type FrameDocument, type GuideKey, type Ratio, type ViewState } from './model';
 import type { FrameRepository } from './repository';
 import type { ImageService } from './service';
 
 type Listener = () => void;
 
 export class FrameSenseViewModel {
-  private state: ViewState = { phase: 'loading', document: structuredClone(EMPTY_DOCUMENT), compareOpen: false, notice: '', error: null };
+  private state: ViewState = { phase: 'loading', document: structuredClone(EMPTY_DOCUMENT), compareOpen: false, notice: '', error: null, canRetrySave: false };
   private readonly listeners = new Set<Listener>();
+  /** 最近一次未能落盘的改动说明，用于错误提示与重试。 */
+  private failedSave: string | null = null;
 
   constructor(private readonly repository: FrameRepository, private readonly imageService: ImageService) {}
 
@@ -25,16 +27,30 @@ export class FrameSenseViewModel {
   }
 
   private persist(document: FrameDocument, notice: string): void {
-    this.patch({ document, phase: 'editing', notice, error: null });
+    this.patch({ document, phase: 'editing', notice, error: null, canRetrySave: false });
     try {
       this.repository.save(document);
+      this.failedSave = null;
     } catch {
-      this.patch({ phase: 'error', error: '本地保存失败，但当前编辑仍保留在页面中。请检查浏览器存储权限。' });
+      this.failedSave = notice;
+      this.patch({ phase: 'error', error: `本地保存失败：「${notice}」这次改动没有写入本地存储，内容仍保留在页面中，可点击重试。`, canRetrySave: true });
+    }
+  }
+
+  retrySave(): void {
+    if (this.failedSave === null) return;
+    const label = this.failedSave;
+    try {
+      this.repository.save(this.state.document);
+      this.failedSave = null;
+      this.patch({ phase: 'editing', notice: `已重新保存：${label}`, error: null, canRetrySave: false });
+    } catch {
+      this.patch({ phase: 'error', error: `本地保存失败：「${label}」仍未写入，请检查浏览器存储权限后再次重试。`, canRetrySave: true });
     }
   }
 
   async initialize(): Promise<void> {
-    this.patch({ phase: 'loading', notice: '正在恢复上次工作状态…', error: null });
+    this.patch({ phase: 'loading', notice: '正在恢复上次工作状态…', error: null, canRetrySave: false });
     try {
       const document = this.repository.load();
       this.patch({ document, phase: document.image ? 'editing' : 'ready', notice: document.image ? '已恢复上次工作状态' : '欢迎来到 FrameSense，先载入示例或导入图片。' });
@@ -44,13 +60,13 @@ export class FrameSenseViewModel {
   }
 
   async importImage(file: File): Promise<void> {
-    this.patch({ phase: 'loading', notice: '正在载入图片…', error: null });
+    this.patch({ phase: 'loading', notice: '正在载入图片…', error: null, canRetrySave: false });
     try {
       const image = await this.imageService.readFile(file);
       const document: FrameDocument = { ...structuredClone(EMPTY_DOCUMENT), image };
       this.persist(document, '图片已载入，可以开始构图。');
     } catch (error) {
-      this.patch({ phase: 'error', error: error instanceof Error ? error.message : '图片载入失败。' });
+      this.patch({ phase: 'error', error: error instanceof Error ? error.message : '图片载入失败。', canRetrySave: false });
     }
   }
 
@@ -70,12 +86,14 @@ export class FrameSenseViewModel {
     this.persist({ ...this.state.document, crop }, `${ratio === 'free' ? '自由' : ratio} 裁切已应用。`);
   }
 
-  moveCrop(dx: number, dy: number): void {
-    this.persist({ ...this.state.document, crop: moveCrop(this.state.document.crop, dx, dy) }, '裁切位置已调整。');
+  /** 拖动过程中的临时预览：只更新画面，不写本地存储。 */
+  previewCrop(crop: CropVariant): void {
+    this.patch({ document: { ...this.state.document, crop }, notice: '正在调整裁切，松开后自动保存…' });
   }
 
-  resizeCrop(width: number, height: number): void {
-    this.persist({ ...this.state.document, crop: resizeCrop(this.state.document.crop, width, height) }, '裁切范围已调整。');
+  /** 拖动结束后统一提交一次：落盘的内容就是屏幕上看到的状态。 */
+  commitCrop(): void {
+    this.persist(this.state.document, '裁切已调整。');
   }
 
   markSubject(x: number, y: number): void {

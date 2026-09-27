@@ -1,4 +1,5 @@
 import { useRef, useState, type PointerEvent } from 'react';
+import { moveCrop, resizeCrop } from '../domain';
 import type { CropVariant, GuideKey, ImageAsset } from '../model';
 
 interface CanvasStageProps {
@@ -7,13 +8,21 @@ interface CanvasStageProps {
   crop: CropVariant;
   subject: { x: number; y: number } | null;
   onSubject: (x: number, y: number) => void;
-  onMoveCrop: (dx: number, dy: number) => void;
-  onResizeCrop: (width: number, height: number) => void;
+  onPreviewCrop: (crop: CropVariant) => void;
+  onCommitCrop: () => void;
 }
 
-export function CanvasStage({ image, guides, crop, subject, onSubject, onMoveCrop, onResizeCrop }: CanvasStageProps) {
+interface DragGesture {
+  mode: 'move' | 'resize';
+  startX: number;
+  startY: number;
+  startCrop: CropVariant;
+  moved: boolean;
+}
+
+export function CanvasStage({ image, guides, crop, subject, onSubject, onPreviewCrop, onCommitCrop }: CanvasStageProps) {
   const stageRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ mode: 'move' | 'resize'; x: number; y: number; crop: CropVariant } | null>(null);
+  const dragRef = useRef<DragGesture | null>(null);
   const [dragging, setDragging] = useState(false);
 
   const pointFromEvent = (event: PointerEvent): { x: number; y: number } | null => {
@@ -26,22 +35,30 @@ export function CanvasStage({ image, guides, crop, subject, onSubject, onMoveCro
     event.stopPropagation();
     const point = pointFromEvent(event);
     if (!point) return;
-    dragRef.current = { mode, x: point.x, y: point.y, crop };
+    dragRef.current = { mode, startX: point.x, startY: point.y, startCrop: { ...crop }, moved: false };
     setDragging(true);
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const moveDrag = (event: PointerEvent) => {
-    if (!dragRef.current) return;
+    const drag = dragRef.current;
+    if (!drag) return;
     const point = pointFromEvent(event);
     if (!point) return;
-    const { mode, x, y, crop: start } = dragRef.current;
-    if (mode === 'move') onMoveCrop(point.x - x, point.y - y);
-    else onResizeCrop(start.width + point.x - x, start.height + point.y - y);
-    dragRef.current = { ...dragRef.current, x: point.x, y: point.y, crop: { ...crop } };
+    const dx = point.x - drag.startX;
+    const dy = point.y - drag.startY;
+    drag.moved = true;
+    if (drag.mode === 'move') onPreviewCrop(moveCrop(drag.startCrop, dx, dy));
+    else onPreviewCrop(resizeCrop(drag.startCrop, drag.startCrop.width + dx, drag.startCrop.height + dy));
   };
 
-  const stopDrag = () => { dragRef.current = null; setDragging(false); };
+  const stopDrag = () => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    dragRef.current = null;
+    setDragging(false);
+    if (drag.moved) onCommitCrop();
+  };
 
   const clickStage = (event: PointerEvent) => {
     if (dragging || (event.target as HTMLElement).closest('.crop-frame')) return;
