@@ -33,6 +33,8 @@ export interface ViewState {
   compareOpen: boolean;
   notice: string;
   error: string | null;
+  /** 未能落盘的那次改动的说明；非空时表示可以重试保存 */
+  pendingSave: string | null;
 }
 
 export const DEFAULT_CROP: CropVariant = {

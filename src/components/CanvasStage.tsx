@@ -9,11 +9,22 @@ interface CanvasStageProps {
   onSubject: (x: number, y: number) => void;
   onMoveCrop: (dx: number, dy: number) => void;
   onResizeCrop: (width: number, height: number) => void;
+  onCommitCrop: (mode: 'move' | 'resize') => void;
 }
 
-export function CanvasStage({ image, guides, crop, subject, onSubject, onMoveCrop, onResizeCrop }: CanvasStageProps) {
+interface DragSession {
+  mode: 'move' | 'resize';
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  startCrop: CropVariant;
+  moved: boolean;
+}
+
+export function CanvasStage({ image, guides, crop, subject, onSubject, onMoveCrop, onResizeCrop, onCommitCrop }: CanvasStageProps) {
   const stageRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ mode: 'move' | 'resize'; x: number; y: number; crop: CropVariant } | null>(null);
+  const dragRef = useRef<DragSession | null>(null);
   const [dragging, setDragging] = useState(false);
 
   const pointFromEvent = (event: PointerEvent): { x: number; y: number } | null => {
@@ -26,22 +37,32 @@ export function CanvasStage({ image, guides, crop, subject, onSubject, onMoveCro
     event.stopPropagation();
     const point = pointFromEvent(event);
     if (!point) return;
-    dragRef.current = { mode, x: point.x, y: point.y, crop };
+    dragRef.current = { mode, startX: point.x, startY: point.y, lastX: point.x, lastY: point.y, startCrop: crop, moved: false };
     setDragging(true);
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const moveDrag = (event: PointerEvent) => {
-    if (!dragRef.current) return;
+    const drag = dragRef.current;
+    if (!drag) return;
     const point = pointFromEvent(event);
     if (!point) return;
-    const { mode, x, y, crop: start } = dragRef.current;
-    if (mode === 'move') onMoveCrop(point.x - x, point.y - y);
-    else onResizeCrop(start.width + point.x - x, start.height + point.y - y);
-    dragRef.current = { ...dragRef.current, x: point.x, y: point.y, crop: { ...crop } };
+    // 拖动中只发瞬时预览（不落盘）；松手后由 stopDrag 统一提交一次
+    if (drag.mode === 'move') {
+      onMoveCrop(point.x - drag.lastX, point.y - drag.lastY);
+      dragRef.current = { ...drag, lastX: point.x, lastY: point.y, moved: true };
+    } else {
+      onResizeCrop(drag.startCrop.width + point.x - drag.startX, drag.startCrop.height + point.y - drag.startY);
+      dragRef.current = { ...drag, moved: true };
+    }
   };
 
-  const stopDrag = () => { dragRef.current = null; setDragging(false); };
+  const stopDrag = () => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    setDragging(false);
+    if (drag?.moved) onCommitCrop(drag.mode);
+  };
 
   const clickStage = (event: PointerEvent) => {
     if (dragging || (event.target as HTMLElement).closest('.crop-frame')) return;
